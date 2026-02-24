@@ -16,4 +16,9 @@ serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
 
 [dev-dependencies]
+criterion = "0.5"
 tempfile = "3"
+
+[[bench]]
+name = "mmap_bench"
+harness = false

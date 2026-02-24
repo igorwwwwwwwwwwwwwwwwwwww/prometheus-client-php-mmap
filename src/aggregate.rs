@@ -341,6 +341,10 @@ fn compare_keys(a: &EntryKey, b: &EntryKey) -> Ordering {
 mod test {
     use super::aggregate_dir_to_prometheus_text;
     use crate::mmap_file::MmapMetricStore;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
     #[test]
@@ -396,5 +400,84 @@ mod test {
         let rendered = aggregate_dir_to_prometheus_text(dir.path().to_str().unwrap()).unwrap();
         assert!(rendered.contains(r#"http_requests_total{path="/hello"} 1"#));
         assert!(!rendered.contains(r#"http_requests_total{path="\/hello"}"#));
+    }
+
+    // Manual stress reproducer for potential weak-memory ordering races:
+    // run explicitly on ARM:
+    //   cargo test stress_append_vs_scrape_visibility -- --ignored --nocapture
+    #[test]
+    #[ignore = "stress reproducer; run explicitly"]
+    fn stress_append_vs_scrape_visibility() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("counter_stress-0.db");
+        let key_prefix = "stress_metric";
+        let iters = std::env::var("PMMAP_STRESS_ITERS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(40_000);
+
+        let done = Arc::new(AtomicBool::new(false));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let errs = Arc::new(AtomicUsize::new(0));
+
+        let writer_done = done.clone();
+        let writer_writes = writes.clone();
+        let writer_db = db.clone();
+        let writer = thread::spawn(move || {
+            let mut store = MmapMetricStore::open(&writer_db).unwrap();
+            for i in 0..iters {
+                let key = format!(r#"["{0}","{0}",["id"],["{1}"]]"#, key_prefix, i);
+                let _ = store.increment(&key, 1.0);
+                writer_writes.fetch_add(1, Ordering::Relaxed);
+
+                // Yield occasionally to increase interleaving with reader.
+                if (i % 128) == 0 {
+                    thread::yield_now();
+                }
+            }
+            writer_done.store(true, Ordering::Relaxed);
+        });
+
+        let reader_done = done.clone();
+        let reader_reads = reads.clone();
+        let reader_errs = errs.clone();
+        let reader_dir = dir.path().to_string_lossy().to_string();
+        let reader = thread::spawn(move || {
+            while !reader_done.load(Ordering::Relaxed) {
+                match aggregate_dir_to_prometheus_text(&reader_dir) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        reader_errs.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                reader_reads.fetch_add(1, Ordering::Relaxed);
+            }
+            // A few extra passes after writer completion.
+            for _ in 0..64 {
+                let _ = aggregate_dir_to_prometheus_text(&reader_dir);
+                reader_reads.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let start = Instant::now();
+        writer.join().unwrap();
+        reader.join().unwrap();
+        let elapsed = start.elapsed();
+
+        let writes = writes.load(Ordering::Relaxed);
+        let reads = reads.load(Ordering::Relaxed);
+        let errs = errs.load(Ordering::Relaxed);
+        eprintln!(
+            "stress_append_vs_scrape_visibility: writes={writes} reads={reads} errs={errs} elapsed={:?}",
+            elapsed
+        );
+
+        // The test itself is a reproducer harness; it always passes and reports
+        // observed scrape errors so runs can be compared before/after fixes.
+        assert!(writes > 0);
+        assert!(reads > 0);
+        // Keep runtime bounded in CI/manual runs.
+        assert!(elapsed < Duration::from_secs(45));
     }
 }
