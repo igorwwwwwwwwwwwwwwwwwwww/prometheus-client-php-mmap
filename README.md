@@ -1,6 +1,7 @@
 # prometheus-client-php-mmap
 
-Rust `ext-php-rs` extension implementing the mmap storage approach from `ruby-gems-prometheus-client-mmap`.
+A sloppy Rust `ext-php-rs` extension inspired by [GitLab's
+`prometheus-client-mmap` Ruby gem](https://gitlab.com/gitlab-org/ruby/gems/prometheus-client-mmap).
 
 ## Features
 
