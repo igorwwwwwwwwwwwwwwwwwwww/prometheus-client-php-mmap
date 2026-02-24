@@ -75,8 +75,6 @@ cargo php stubs --stdout
 - `PrometheusMmapStore::flush(): void`
 - `prometheus_mmap_render_dir(string $dir): string`
 
-`flush()` is optional in normal request flow. Use it when you want a stronger durability boundary (for example before process exit), accepting extra sync overhead.
-
 ## Example usage
 
 ```php
