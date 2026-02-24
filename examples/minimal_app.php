@@ -27,10 +27,8 @@ $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = strtolower($_SERVER['REQUEST_METHOD'] ?? 'get');
 $requestStart = microtime(true);
 $gcStart = gc_status();
-$route = 'unmatched';
-$code = 404;
 
-$metricKey = static function (string $family, string $name, array $labels): string {
+$metricKey = static function (string $family, string $name, array $labels = []): string {
     $labelNames = array_keys($labels);
     sort($labelNames);
     $labelValues = [];
@@ -113,21 +111,31 @@ register_shutdown_function(static function () use (
         $metricKey('php_gc_free_time_seconds', 'php_gc_free_time_seconds_total', $labels),
         $deltaFreeTime,
     );
+
+    $gaugeAllStore->set(
+        $metricKey('demo_inflight_requests', 'demo_inflight_requests'),
+        0.0,
+    );
+
     $counterStore->flush();
-
-    $sumGaugeKey = $metricKey('demo_workers_alive', 'demo_workers_alive', []);
-    $gaugeLivesumStore->set($sumGaugeKey, 1.0);
-    $gaugeLivesumStore->flush();
-
-    $workerGaugeKey = $metricKey('demo_inflight_requests', 'demo_inflight_requests', []);
-    $gaugeAllStore->set($workerGaugeKey, 1.0);
-    $gaugeAllStore->set($workerGaugeKey, 0.0);
     $gaugeAllStore->flush();
+    $gaugeLivesumStore->flush();
+    $gaugeMaxStore->flush();
 });
+
+$gaugeLivesumStore->set(
+    $metricKey('demo_workers_alive', 'demo_workers_alive'),
+    1.0,
+);
+
+$gaugeAllStore->set(
+    $metricKey('demo_inflight_requests', 'demo_inflight_requests'),
+    1.0,
+);
 
 if ($path === '/') {
     $route = '/';
-    $code = 200;
+    http_response_code(200);
     header('Content-Type: text/plain; charset=utf-8');
     echo "ok\n";
     exit;
@@ -135,20 +143,39 @@ if ($path === '/') {
 
 if ($path === '/hello') {
     $route = '/hello';
-    $code = 200;
+    http_response_code(200);
     header('Content-Type: text/plain; charset=utf-8');
     echo "hello\n";
+    $counterStore->increment(
+        $metricKey('demo_hello_requests_total', 'demo_hello_requests_total'),
+        1.0,
+    );
+    exit;
+}
+
+if ($path === '/sleep') {
+    $route = '/sleep';
+    http_response_code(200);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo "sleeping...\n";
+    sleep(5);
+    echo "done\n";
+    $counterStore->increment(
+        $metricKey('demo_sleep_requests_total', 'demo_sleep_requests_total'),
+        1.0,
+    );
     exit;
 }
 
 if ($path === '/metrics') {
     $route = '/metrics';
-    $code = 200;
+    http_response_code(200);
     header('Content-Type: text/plain; version=0.0.4; charset=utf-8');
     echo prometheus_mmap_render_dir($metricsDir);
     exit;
 }
 
-http_response_code($code);
+$route = 'unmatched';
+http_response_code(404);
 header('Content-Type: text/plain; charset=utf-8');
 echo "not found\n";
