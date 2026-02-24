@@ -116,11 +116,6 @@ register_shutdown_function(static function () use (
         $metricKey('demo_inflight_requests', 'demo_inflight_requests'),
         0.0,
     );
-
-    $counterStore->flush();
-    $gaugeAllStore->flush();
-    $gaugeLivesumStore->flush();
-    $gaugeMaxStore->flush();
 });
 
 $gaugeLivesumStore->set(

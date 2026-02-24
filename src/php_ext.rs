@@ -1,6 +1,11 @@
 use crate::aggregate::aggregate_dir_to_prometheus_text;
+use crate::error::MmapError;
 use crate::mmap_file::MmapMetricStore;
 use ext_php_rs::prelude::*;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+static STORE_CACHE: OnceLock<Mutex<HashMap<String, MmapMetricStore>>> = OnceLock::new();
 
 #[php_class]
 #[php(name = "PrometheusMmapStore")]
@@ -16,23 +21,20 @@ impl PhpMmapStore {
 
     #[php(defaults(by = 1.0))]
     pub fn increment(&self, key_json: String, by: f64) -> PhpResult<f64> {
-        let mut store = MmapMetricStore::open(&self.path).map_err(to_php_exception)?;
-        store.increment(&key_json, by).map_err(to_php_exception)
+        with_cached_store(&self.path, |store| store.increment(&key_json, by))
+            .map_err(to_php_exception)
     }
 
     pub fn set(&self, key_json: String, value: f64) -> PhpResult<f64> {
-        let mut store = MmapMetricStore::open(&self.path).map_err(to_php_exception)?;
-        store.set(&key_json, value).map_err(to_php_exception)
+        with_cached_store(&self.path, |store| store.set(&key_json, value)).map_err(to_php_exception)
     }
 
     pub fn get(&self, key_json: String) -> PhpResult<f64> {
-        let mut store = MmapMetricStore::open(&self.path).map_err(to_php_exception)?;
-        store.get(&key_json).map_err(to_php_exception)
+        with_cached_store(&self.path, |store| store.get(&key_json)).map_err(to_php_exception)
     }
 
     pub fn flush(&self) -> PhpResult<()> {
-        let mut store = MmapMetricStore::open(&self.path).map_err(to_php_exception)?;
-        store.flush().map_err(to_php_exception)
+        with_cached_store(&self.path, |store| store.flush()).map_err(to_php_exception)
     }
 }
 
@@ -50,4 +52,24 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
 
 fn to_php_exception(err: impl ToString) -> ext_php_rs::exception::PhpException {
     err.to_string().into()
+}
+
+fn with_cached_store<T>(
+    path: &str,
+    f: impl FnOnce(&mut MmapMetricStore) -> Result<T, MmapError>,
+) -> Result<T, MmapError> {
+    let cache = STORE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache
+        .lock()
+        .map_err(|_| MmapError::Message("store cache lock poisoned".to_string()))?;
+
+    if !guard.contains_key(path) {
+        let store = MmapMetricStore::open(path)?;
+        guard.insert(path.to_owned(), store);
+    }
+
+    let store = guard
+        .get_mut(path)
+        .ok_or_else(|| MmapError::Message("store cache lookup failed".to_string()))?;
+    f(store)
 }

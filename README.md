@@ -41,6 +41,8 @@ brew services restart php
 # or your system-specific php-fpm reload command
 ```
 
+When using persistent mmap handles in long-lived php-fpm workers, manual deletion of metric `*.db` files requires a php-fpm worker restart to re-establish mapped files.
+
 Generate stubs:
 
 ```bash
