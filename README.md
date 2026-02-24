@@ -16,6 +16,7 @@ A sloppy Rust `ext-php-rs` extension inspired by [GitLab's
 
 - **One-writer-per-file assumption**: each metric file is written by a single worker process.
 - **Publication order**: entry bytes are written first, then `used` is advanced. A `Release` fence is used before writing `used` so readers do not observe an advanced boundary before entry bytes are visible on weakly ordered CPUs.
+- **Architecture note**: x86-64 TSO often masks publication-order bugs, while weakly ordered architectures (e.g. ARM, RISC-V, POWER) can expose them. The `Release` fence keeps behavior portable and correct across architectures (typically a no-op on x86, real ordering barrier on weaker models).
 - **Reader contract**: readers treat `used` as parse boundary and aggregate by scanning `*.db` files in the metrics directory.
 - **Flush/durability**:
   - Writes update mmap memory immediately.
