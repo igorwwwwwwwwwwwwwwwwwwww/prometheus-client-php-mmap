@@ -12,11 +12,27 @@ A sloppy Rust `ext-php-rs` extension inspired by [GitLab's
 - multiprocess merge and render to Prometheus text format
 - native PHP extension API via [`ext-php-rs`](https://github.com/extphprs/ext-php-rs)
 
+## Consistency Model
+
+- **One-writer-per-file assumption**: each metric file is written by a single worker process.
+- **Publication order**: entry bytes are written first, then `used` is advanced. A `Release` fence is used before writing `used` so readers do not observe an advanced boundary before entry bytes are visible on weakly ordered CPUs.
+- **Reader contract**: readers treat `used` as parse boundary and aggregate by scanning `*.db` files in the metrics directory.
+- **Flush/durability**:
+  - Writes update mmap memory immediately.
+  - `flush()` requests `msync` and improves durability.
+  - Without `flush()`, kernel writeback is asynchronous; recent updates can be lost on crash/power loss.
+- **Visibility**: stale reads can happen briefly (scrape lag), but should converge as writes become visible.
+- **Persistent handles**: extension-side file handles/mappings are cached per worker process for performance.
+  - If metric `*.db` files are manually deleted while workers are running, restart php-fpm workers to re-establish mappings.
+- **Scope**: this is a pragmatic observability model (high throughput, best-effort durability), not a transactional storage model.
+
 ## TODO
 
 - Evaluate implementing `PrometheusProto` (binary protobuf exposition format) in addition to text format.
   See: https://prometheus.io/docs/instrumenting/content_negotiation/ and https://prometheus.io/docs/instrumenting/exposition_formats/
 - Add stale `*.db` cleanup strategy (dead PID / age-based GC) to avoid merge slowdown and stale metrics from exited workers.
+- Make scrape aggregation tolerant of partial/corrupt trailing entries (render valid prefix instead of failing whole scrape).
+- Add explicit persistent-handle lifecycle APIs (e.g. `close_all` / `reopen(path)`) to avoid requiring full php-fpm restart after manual file cleanup.
 
 ## Tool versions
 
@@ -41,8 +57,6 @@ For `php-fpm`, the only extra step vs normal install is reloading/restarting the
 brew services restart php
 # or your system-specific php-fpm reload command
 ```
-
-When using persistent mmap handles in long-lived php-fpm workers, manual deletion of metric `*.db` files requires a php-fpm worker restart to re-establish mapped files.
 
 Generate stubs:
 
