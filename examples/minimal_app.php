@@ -1,0 +1,176 @@
+<?php
+
+declare(strict_types=1);
+
+$metricsDir = __DIR__ . '/metrics';
+if (!is_dir($metricsDir)) {
+    mkdir($metricsDir, 0777, true);
+}
+
+// Ruby-style filename layout: <type>_<pid>-<n>.db
+$counterDbPath = $metricsDir . '/counter_' . getmypid() . '-0.db';
+$counterStore = new PrometheusMmapStore($counterDbPath);
+
+// Gauge files demonstrate multiprocess modes:
+// - all: keep one series per worker (pid label retained)
+// - livesum: sum worker values into one series (pid not retained)
+$gaugeAllDbPath = $metricsDir . '/gauge_all_' . getmypid() . '-0.db';
+$gaugeAllStore = new PrometheusMmapStore($gaugeAllDbPath);
+
+$gaugeLivesumDbPath = $metricsDir . '/gauge_livesum_' . getmypid() . '-0.db';
+$gaugeLivesumStore = new PrometheusMmapStore($gaugeLivesumDbPath);
+
+$gaugeMaxDbPath = $metricsDir . '/gauge_max_' . getmypid() . '-0.db';
+$gaugeMaxStore = new PrometheusMmapStore($gaugeMaxDbPath);
+
+$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$method = strtolower($_SERVER['REQUEST_METHOD'] ?? 'get');
+$requestStart = microtime(true);
+$gcStart = gc_status();
+$route = 'unmatched';
+$code = 404;
+
+$workerGaugeKey = json_encode(
+    ['demo_inflight_requests', 'demo_inflight_requests', [], []],
+    JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+);
+$gaugeAllStore->set($workerGaugeKey, 1.0);
+$gaugeAllStore->flush();
+
+register_shutdown_function(static function () use (
+    $counterStore,
+    $gaugeAllStore,
+    $gaugeLivesumStore,
+    $gaugeMaxStore,
+    $workerGaugeKey,
+    &$route,
+    $method,
+    &$code,
+    $requestStart,
+    $gcStart,
+): void {
+    $finalCode = http_response_code();
+    if (!is_int($finalCode) || $finalCode <= 0) {
+        $finalCode = $code;
+    }
+
+    $labelNames = ['route', 'method', 'code'];
+    $labelValues = [$route, $method, (string) $finalCode];
+    $metricKey = static function (
+        string $family,
+        string $name,
+        array $names,
+        array $values,
+    ): string {
+        return json_encode(
+            [$family, $name, $names, $values],
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+        );
+    };
+
+    $counterStore->increment(
+        $metricKey('http_requests_total', 'http_requests_total', $labelNames, $labelValues),
+        1.0,
+    );
+
+    $duration = microtime(true) - $requestStart;
+    $counterStore->increment(
+        $metricKey(
+            'http_request_duration_seconds',
+            'http_request_duration_seconds_total',
+            $labelNames,
+            $labelValues,
+        ),
+        $duration,
+    );
+
+    $peakBytes = (float) memory_get_peak_usage(true);
+    $gaugeMaxStore->set(
+        $metricKey(
+            'php_request_memory_peak_bytes',
+            'php_request_memory_peak_bytes',
+            $labelNames,
+            $labelValues,
+        ),
+        $peakBytes,
+    );
+
+    $gcEnd = gc_status();
+    $deltaRuns = max(0, ($gcEnd['runs'] ?? 0) - ($gcStart['runs'] ?? 0));
+    $deltaCollected = max(0, ($gcEnd['collected'] ?? 0) - ($gcStart['collected'] ?? 0));
+    $deltaCollectorTime = max(0.0, ($gcEnd['collector_time'] ?? 0.0) - ($gcStart['collector_time'] ?? 0.0));
+    $deltaDestructorTime = max(0.0, ($gcEnd['destructor_time'] ?? 0.0) - ($gcStart['destructor_time'] ?? 0.0));
+    $deltaFreeTime = max(0.0, ($gcEnd['free_time'] ?? 0.0) - ($gcStart['free_time'] ?? 0.0));
+
+    $counterStore->increment(
+        $metricKey('php_gc_runs_total', 'php_gc_runs_total', $labelNames, $labelValues),
+        (float) $deltaRuns,
+    );
+    $counterStore->increment(
+        $metricKey('php_gc_collected_total', 'php_gc_collected_total', $labelNames, $labelValues),
+        (float) $deltaCollected,
+    );
+    $counterStore->increment(
+        $metricKey(
+            'php_gc_collector_time_seconds',
+            'php_gc_collector_time_seconds_total',
+            $labelNames,
+            $labelValues,
+        ),
+        $deltaCollectorTime,
+    );
+    $counterStore->increment(
+        $metricKey(
+            'php_gc_destructor_time_seconds',
+            'php_gc_destructor_time_seconds_total',
+            $labelNames,
+            $labelValues,
+        ),
+        $deltaDestructorTime,
+    );
+    $counterStore->increment(
+        $metricKey(
+            'php_gc_free_time_seconds',
+            'php_gc_free_time_seconds_total',
+            $labelNames,
+            $labelValues,
+        ),
+        $deltaFreeTime,
+    );
+    $counterStore->flush();
+
+    $sumGaugeKey = $metricKey('demo_workers_alive', 'demo_workers_alive', [], []);
+    $gaugeLivesumStore->set($sumGaugeKey, 1.0);
+    $gaugeLivesumStore->flush();
+
+    $gaugeAllStore->set($workerGaugeKey, 0.0);
+    $gaugeAllStore->flush();
+});
+
+if ($path === '/') {
+    $route = '/';
+    $code = 200;
+    header('Content-Type: text/plain; charset=utf-8');
+    echo "ok\n";
+    exit;
+}
+
+if ($path === '/hello') {
+    $route = '/hello';
+    $code = 200;
+    header('Content-Type: text/plain; charset=utf-8');
+    echo "hello\n";
+    exit;
+}
+
+if ($path === '/metrics') {
+    $route = '/metrics';
+    $code = 200;
+    header('Content-Type: text/plain; version=0.0.4; charset=utf-8');
+    echo prometheus_mmap_render_dir($metricsDir);
+    exit;
+}
+
+http_response_code($code);
+header('Content-Type: text/plain; charset=utf-8');
+echo "not found\n";
