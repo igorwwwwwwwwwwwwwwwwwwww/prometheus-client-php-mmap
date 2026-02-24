@@ -4,6 +4,7 @@ use memmap2::{MmapMut, MmapOptions};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{Ordering, fence};
 
 pub const HEADER_SIZE: usize = 8;
 
@@ -132,6 +133,9 @@ impl MmapMetricStore {
         let value_offset = RawEntry::save(&mut self.map[start..end], key_json.as_bytes(), value)?;
         let absolute_value_offset = checked_add(start, value_offset)?;
 
+        // Ensure entry bytes become visible before advancing the `used` header,
+        // which readers treat as the upper parsing boundary.
+        fence(Ordering::Release);
         self.write_used_header(new_used)?;
         self.positions
             .insert(key_json.to_owned(), absolute_value_offset);
