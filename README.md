@@ -33,7 +33,6 @@ A sloppy Rust `ext-php-rs` extension inspired by [GitLab's
 - Evaluate implementing `PrometheusProto` (binary protobuf exposition format) in addition to text format.
   See: https://prometheus.io/docs/instrumenting/content_negotiation/ and https://prometheus.io/docs/instrumenting/exposition_formats/
 - Add stale `*.db` cleanup strategy (dead PID / age-based GC) to avoid merge slowdown and stale metrics from exited workers.
-- Make scrape aggregation tolerant of partial/corrupt trailing entries (render valid prefix instead of failing whole scrape).
 - Add explicit persistent-handle lifecycle APIs (e.g. `close_all` / `reopen(path)`) to avoid requiring full php-fpm restart after manual file cleanup.
 
 ## Tool versions

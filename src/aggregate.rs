@@ -190,8 +190,14 @@ fn aggregate_to_prometheus_text(files: &[FileParams]) -> Result<String> {
 
         let mut pos = HEADER_SIZE;
         while pos + 4 <= used {
-            let entry = RawEntry::from_slice(&bytes[pos..used])?;
-            let key = std::str::from_utf8(entry.json())?;
+            let entry = match RawEntry::from_slice(&bytes[pos..used]) {
+                Ok(entry) => entry,
+                Err(_) => break,
+            };
+            let key = match std::str::from_utf8(entry.json()) {
+                Ok(key) => key,
+                Err(_) => break,
+            };
             let pid_significant = is_pid_significant(file.metric_type, file.multiprocess_mode);
             let entry_key = EntryKey {
                 json: key.to_owned(),
@@ -207,7 +213,10 @@ fn aggregate_to_prometheus_text(files: &[FileParams]) -> Result<String> {
                 .and_modify(|current| merge_meta(current, &incoming))
                 .or_insert(incoming);
 
-            pos = checked_add(pos, entry.total_len())?;
+            pos = match checked_add(pos, entry.total_len()) {
+                Ok(next) => next,
+                Err(_) => break,
+            };
         }
     }
 
@@ -341,6 +350,7 @@ fn compare_keys(a: &EntryKey, b: &EntryKey) -> Ordering {
 mod test {
     use super::aggregate_dir_to_prometheus_text;
     use crate::mmap_file::MmapMetricStore;
+    use std::fs;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
@@ -400,6 +410,28 @@ mod test {
         let rendered = aggregate_dir_to_prometheus_text(dir.path().to_str().unwrap()).unwrap();
         assert!(rendered.contains(r#"http_requests_total{path="/hello"} 1"#));
         assert!(!rendered.contains(r#"http_requests_total{path="\/hello"}"#));
+    }
+
+    #[test]
+    fn aggregate_tolerates_corrupt_trailing_entry() {
+        let dir = tempdir().unwrap();
+        let p1 = dir.path().join("counter_300-0.db");
+        let key = r#"["http_requests_total","http_requests_total",["path"],["/ok"]]"#;
+
+        let mut s1 = MmapMetricStore::open(&p1).unwrap();
+        s1.increment(key, 2.0).unwrap();
+        s1.flush().unwrap();
+
+        let mut bytes = fs::read(&p1).unwrap();
+        let used = u32::from_ne_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let trailing = [0xFF, 0xEE, 0xDD, 0xCC, 0xAA, 0xBB];
+        bytes.extend_from_slice(&trailing);
+        let new_used = used + trailing.len();
+        bytes[0..4].copy_from_slice(&(new_used as u32).to_ne_bytes());
+        fs::write(&p1, bytes).unwrap();
+
+        let rendered = aggregate_dir_to_prometheus_text(dir.path().to_str().unwrap()).unwrap();
+        assert!(rendered.contains(r#"http_requests_total{path="/ok"} 2"#));
     }
 
     // Manual stress reproducer for potential weak-memory ordering races:
