@@ -10,7 +10,7 @@ A sloppy Rust `ext-php-rs` extension inspired by [GitLab's
   - repeated entries: `[u32 key_len][key_json][space padding][f64 value]`
 - metric operations: `increment`, `set`, `get`, `flush`
 - multiprocess merge and render to Prometheus text format
-- native PHP extension API via `ext-php-rs` (no PHP FFI required)
+- native PHP extension API via [`ext-php-rs`](https://github.com/extphprs/ext-php-rs)
 
 ## TODO
 
