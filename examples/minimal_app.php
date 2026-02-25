@@ -46,6 +46,7 @@ register_shutdown_function(static function () use (
     $gaugeAllStore,
     $gaugeLivesumStore,
     $gaugeMaxStore,
+    $metricsDir,
     $metricKey,
     &$route,
     $method,
@@ -116,6 +117,15 @@ register_shutdown_function(static function () use (
         $metricKey('demo_inflight_requests', 'demo_inflight_requests'),
         0.0,
     );
+
+    $gcEnabled = ($_ENV['PMMAP_GC_ENABLE'] ?? getenv('PMMAP_GC_ENABLE') ?: '') === '1';
+    if ($gcEnabled) {
+        $budgetMs = (int) ($_ENV['PMMAP_GC_BUDGET_MS'] ?? getenv('PMMAP_GC_BUDGET_MS') ?: '10');
+        $scanLimit = (int) ($_ENV['PMMAP_GC_SCAN_LIMIT'] ?? getenv('PMMAP_GC_SCAN_LIMIT') ?: '64');
+        $deleteLimit = (int) ($_ENV['PMMAP_GC_DELETE_LIMIT'] ?? getenv('PMMAP_GC_DELETE_LIMIT') ?: '16');
+        $deadGraceSec = (int) ($_ENV['PMMAP_GC_DEAD_GRACE_SEC'] ?? getenv('PMMAP_GC_DEAD_GRACE_SEC') ?: '600');
+        prometheus_mmap_gc_dir($metricsDir, $budgetMs, $scanLimit, $deleteLimit, $deadGraceSec);
+    }
 });
 
 $gaugeLivesumStore->set(

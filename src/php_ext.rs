@@ -1,4 +1,4 @@
-use crate::aggregate::aggregate_dir_to_prometheus_text;
+use crate::aggregate::{aggregate_dir_to_prometheus_text, gc_metric_files};
 use crate::error::MmapError;
 use crate::mmap_file::MmapMetricStore;
 use ext_php_rs::prelude::*;
@@ -43,11 +43,36 @@ pub fn prometheus_mmap_render_dir(dir: String) -> PhpResult<String> {
     aggregate_dir_to_prometheus_text(&dir).map_err(to_php_exception)
 }
 
+#[php_function]
+#[php(defaults(budget_ms = 10, scan_limit = 64, delete_limit = 16, dead_grace_sec = 600))]
+pub fn prometheus_mmap_gc_dir(
+    dir: String,
+    budget_ms: i64,
+    scan_limit: i64,
+    delete_limit: i64,
+    dead_grace_sec: i64,
+) -> PhpResult<i64> {
+    let budget_ms = budget_ms.max(1) as u64;
+    let scan_limit = scan_limit.max(1) as usize;
+    let delete_limit = delete_limit.max(1) as usize;
+    let dead_grace_sec = dead_grace_sec.max(0) as u64;
+    let deleted = gc_metric_files(
+        &dir,
+        budget_ms,
+        scan_limit,
+        delete_limit,
+        dead_grace_sec,
+    )
+    .map_err(to_php_exception)?;
+    Ok(deleted as i64)
+}
+
 #[php_module]
 pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
     module
         .class::<PhpMmapStore>()
         .function(wrap_function!(prometheus_mmap_render_dir))
+        .function(wrap_function!(prometheus_mmap_gc_dir))
 }
 
 fn to_php_exception(err: impl ToString) -> ext_php_rs::exception::PhpException {

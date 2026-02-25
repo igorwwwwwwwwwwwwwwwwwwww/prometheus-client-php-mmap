@@ -32,7 +32,6 @@ A sloppy Rust `ext-php-rs` extension inspired by [GitLab's
 
 - Evaluate implementing `PrometheusProto` (binary protobuf exposition format) in addition to text format.
   See: https://prometheus.io/docs/instrumenting/content_negotiation/ and https://prometheus.io/docs/instrumenting/exposition_formats/
-- Add stale `*.db` cleanup strategy (dead PID / age-based GC) to avoid merge slowdown and stale metrics from exited workers.
 - Add explicit persistent-handle lifecycle APIs (e.g. `close_all` / `reopen(path)`) to avoid requiring full php-fpm restart after manual file cleanup.
 
 ## Tool versions
@@ -73,6 +72,12 @@ cargo php stubs --stdout
 - `PrometheusMmapStore::get(string $keyJson): float`
 - `PrometheusMmapStore::flush(): void`
 - `prometheus_mmap_render_dir(string $dir): string`
+- `prometheus_mmap_gc_dir(string $dir, int $budgetMs = 10, int $scanLimit = 64, int $deleteLimit = 16, int $deadGraceSec = 600): int`
+
+`prometheus_mmap_gc_dir(...)` performs best-effort stale `*.db` cleanup:
+- uses a non-blocking lock (`.gc.lock`) so only one process runs GC work at a time
+- advances a cursor file (`.gc.cursor`) to amortize directory scanning across calls
+- deletes only files with numeric PID names that are not alive and older than `deadGraceSec`
 
 ## Example usage
 
