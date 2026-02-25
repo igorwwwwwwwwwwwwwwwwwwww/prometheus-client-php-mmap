@@ -31,9 +31,12 @@ A sloppy Rust `ext-php-rs` extension inspired by [GitLab's
 ## TODO
 
 - Evaluate implementing `PrometheusProto` (binary protobuf exposition format) in addition to text format.
-  See: https://prometheus.io/docs/instrumenting/content_negotiation/ and https://prometheus.io/docs/instrumenting/exposition_formats/
+  See: [content negotiation docs](https://prometheus.io/docs/instrumenting/content_negotiation/) and [exposition formats docs](https://prometheus.io/docs/instrumenting/exposition_formats/)
 - Add real histogram emission in the PHP demo (`_bucket`, `_sum`, `_count`) with stable bucket boundaries.
+- Track feature parity with Python multiprocess mode where it makes sense (modes/lifecycle/operational guidance): [client_python multiprocess docs](https://github.com/prometheus/client_python/blob/master/docs/content/multiprocess/_index.md)
 - Make GC more robust to PID reuse by extending filename identity (for example PID + worker start marker).
+- Evaluate optional writer-ownership locking for file claim/allocation (Ruby-style exclusive lock) to safely support surrogate/shared worker identifiers.
+- Evaluate a PHP-FPM worker identity strategy (no stable worker-slot ID exposed): use `(pid,start-time)` and/or explicit slot mapping when needed.
 - Add an interoperability test harness against a local Prometheus instance/repo scrape to validate end-to-end ingestion/render behavior.
 - Evaluate extracting a standalone multiprocess Prometheus mmap core/toolkit (shared format + merge/GC), with thin PHP/Ruby bindings.
 - Evaluate a separate exporter daemon for mmap read/merge/render, so app workers only write metrics.
