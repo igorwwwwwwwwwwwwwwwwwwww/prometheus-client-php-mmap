@@ -32,6 +32,9 @@ A sloppy Rust `ext-php-rs` extension inspired by [GitLab's
 
 - Evaluate implementing `PrometheusProto` (binary protobuf exposition format) in addition to text format.
   See: https://prometheus.io/docs/instrumenting/content_negotiation/ and https://prometheus.io/docs/instrumenting/exposition_formats/
+- Add real histogram emission in the PHP demo (`_bucket`, `_sum`, `_count`) with stable bucket boundaries.
+- Make GC more robust to PID reuse by extending filename identity (for example PID + worker start marker).
+- Add an interoperability test harness against local `../prometheus` scrape to validate end-to-end ingestion/render behavior.
 - Add explicit persistent-handle lifecycle APIs (e.g. `close_all` / `reopen(path)`) to avoid requiring full php-fpm restart after manual file cleanup.
 
 ## Tool versions
