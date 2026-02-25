@@ -118,14 +118,6 @@ register_shutdown_function(static function () use (
         0.0,
     );
 
-    $gcEnabled = ($_ENV['PMMAP_GC_ENABLE'] ?? getenv('PMMAP_GC_ENABLE') ?: '') === '1';
-    if ($gcEnabled) {
-        $budgetMs = (int) ($_ENV['PMMAP_GC_BUDGET_MS'] ?? getenv('PMMAP_GC_BUDGET_MS') ?: '10');
-        $scanLimit = (int) ($_ENV['PMMAP_GC_SCAN_LIMIT'] ?? getenv('PMMAP_GC_SCAN_LIMIT') ?: '64');
-        $deleteLimit = (int) ($_ENV['PMMAP_GC_DELETE_LIMIT'] ?? getenv('PMMAP_GC_DELETE_LIMIT') ?: '16');
-        $deadGraceSec = (int) ($_ENV['PMMAP_GC_DEAD_GRACE_SEC'] ?? getenv('PMMAP_GC_DEAD_GRACE_SEC') ?: '600');
-        prometheus_mmap_gc_dir($metricsDir, $budgetMs, $scanLimit, $deleteLimit, $deadGraceSec);
-    }
 });
 
 $gaugeLivesumStore->set(
@@ -158,11 +150,23 @@ if ($path === '/hello') {
     exit;
 }
 
+if ($path === '/phpinfo') {
+    $route = '/phpinfo';
+    http_response_code(200);
+    phpinfo();
+    exit;
+}
+
 if ($path === '/sleep') {
     $route = '/sleep';
     http_response_code(200);
     header('Content-Type: text/plain; charset=utf-8');
+    header('X-Accel-Buffering: no');
+    while (ob_get_level() > 0) {
+        ob_end_flush();
+    }
     echo "sleeping...\n";
+    flush();
     sleep(5);
     echo "done\n";
     $counterStore->increment(
@@ -174,6 +178,16 @@ if ($path === '/sleep') {
 
 if ($path === '/metrics') {
     $route = '/metrics';
+    register_shutdown_function(static function () use ($metricsDir): void {
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+        }
+        $budgetMs = (int) ($_ENV['PMMAP_GC_BUDGET_MS'] ?? getenv('PMMAP_GC_BUDGET_MS') ?: '10');
+        $scanLimit = (int) ($_ENV['PMMAP_GC_SCAN_LIMIT'] ?? getenv('PMMAP_GC_SCAN_LIMIT') ?: '64');
+        $deleteLimit = (int) ($_ENV['PMMAP_GC_DELETE_LIMIT'] ?? getenv('PMMAP_GC_DELETE_LIMIT') ?: '16');
+        $deadGraceSec = (int) ($_ENV['PMMAP_GC_DEAD_GRACE_SEC'] ?? getenv('PMMAP_GC_DEAD_GRACE_SEC') ?: '600');
+        prometheus_mmap_gc_dir($metricsDir, $budgetMs, $scanLimit, $deleteLimit, $deadGraceSec);
+    });
     http_response_code(200);
     header('Content-Type: text/plain; version=0.0.4; charset=utf-8');
     echo prometheus_mmap_render_dir($metricsDir);
