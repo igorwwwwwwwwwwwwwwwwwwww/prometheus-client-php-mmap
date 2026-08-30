@@ -1,8 +1,7 @@
 use crate::error::{MmapError, Result, checked_add};
-use crate::mmap_file::HEADER_SIZE;
+use crate::metric_key::{StoredMetricKey, escape_label_value};
+use crate::mmap_file::{FILE_FORMAT_VERSION, HEADER_SIZE};
 use crate::raw_entry::RawEntry;
-use serde::Deserialize;
-use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -76,7 +75,7 @@ struct FileParams {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct EntryKey {
-    json: String,
+    metric: StoredMetricKey,
     pid: Option<String>,
 }
 
@@ -85,14 +84,6 @@ struct EntryMeta {
     mode: MultiprocessMode,
     metric_type: MetricType,
     value: f64,
-}
-
-#[derive(Debug, Deserialize)]
-struct MetricText<'a> {
-    family_name: &'a str,
-    metric_name: &'a str,
-    labels: Vec<&'a str>,
-    values: Vec<Value>,
 }
 
 pub fn aggregate_dir_to_prometheus_text(dir: &str) -> Result<String> {
@@ -314,7 +305,9 @@ fn extract_numeric_pid(filename: &str) -> Option<i32> {
 }
 
 fn seconds_since_epoch(t: SystemTime) -> Option<u64> {
-    t.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs())
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 #[cfg(unix)]
@@ -369,6 +362,11 @@ fn aggregate_to_prometheus_text(files: &[FileParams]) -> Result<String> {
             continue;
         }
 
+        let version = u32::from_ne_bytes(bytes[4..8].try_into().expect("slice len checked"));
+        if version != FILE_FORMAT_VERSION {
+            continue;
+        }
+
         let used = u32::from_ne_bytes(bytes[0..4].try_into().expect("slice len checked")) as usize;
         let used = if used == 0 { HEADER_SIZE } else { used };
         if used > bytes.len() {
@@ -379,18 +377,26 @@ fn aggregate_to_prometheus_text(files: &[FileParams]) -> Result<String> {
         }
 
         let mut pos = HEADER_SIZE;
-        while pos + 4 <= used {
+        while pos + 12 <= used {
             let entry = match RawEntry::from_slice(&bytes[pos..used]) {
                 Ok(entry) => entry,
                 Err(_) => break,
             };
-            let key = match std::str::from_utf8(entry.json()) {
-                Ok(key) => key,
+            let family = match std::str::from_utf8(entry.family_bytes()) {
+                Ok(value) => value,
+                Err(_) => break,
+            };
+            let sample = match std::str::from_utf8(entry.sample_bytes()) {
+                Ok(value) => value,
+                Err(_) => break,
+            };
+            let labels = match std::str::from_utf8(entry.labels_bytes()) {
+                Ok(value) => value,
                 Err(_) => break,
             };
             let pid_significant = is_pid_significant(file.metric_type, file.multiprocess_mode);
             let entry_key = EntryKey {
-                json: key.to_owned(),
+                metric: StoredMetricKey::new(family, sample, labels),
                 pid: pid_significant.then(|| file.pid.clone()),
             };
             let incoming = EntryMeta {
@@ -451,27 +457,24 @@ fn render(merged: HashMap<EntryKey, EntryMeta>) -> Result<String> {
     let mut previous_family: Option<String> = None;
 
     for (key, meta) in rows {
-        let parsed: MetricText<'_> = serde_json::from_str(&key.json)?;
-        if parsed.labels.len() != parsed.values.len() {
-            return Err(MmapError::Message(
-                "labels and values must have same length".to_string(),
-            ));
-        }
-
-        if previous_family.as_deref() != Some(parsed.family_name) {
+        if previous_family.as_deref() != Some(key.metric.family.as_str()) {
             out.push_str("# HELP ");
-            out.push_str(parsed.family_name);
+            out.push_str(&key.metric.family);
             out.push_str(" Multiprocess metric\n");
             out.push_str("# TYPE ");
-            out.push_str(parsed.family_name);
+            out.push_str(&key.metric.family);
             out.push(' ');
             out.push_str(meta.metric_type.as_prometheus_type());
             out.push('\n');
-            previous_family = Some(parsed.family_name.to_owned());
+            previous_family = Some(key.metric.family.clone());
         }
 
-        out.push_str(parsed.metric_name);
-        append_labels(&mut out, &parsed, key.pid.as_deref());
+        append_sample(
+            &mut out,
+            &key.metric.sample,
+            &key.metric.labels,
+            key.pid.as_deref(),
+        );
         out.push(' ');
         out.push_str(&meta.value.to_string());
         out.push('\n');
@@ -480,58 +483,41 @@ fn render(merged: HashMap<EntryKey, EntryMeta>) -> Result<String> {
     Ok(out)
 }
 
-fn append_labels(out: &mut String, parsed: &MetricText<'_>, pid: Option<&str>) {
-    let has_labels = !parsed.labels.is_empty() || pid.is_some();
-    if !has_labels {
+fn append_sample(out: &mut String, sample: &str, labels: &str, pid: Option<&str>) {
+    out.push_str(sample);
+    let Some(pid) = pid else {
+        out.push_str(labels);
+        return;
+    };
+
+    let pid = escape_label_value(pid);
+    if let Some(head) = labels.strip_suffix('}') {
+        out.push_str(head);
+        if head.contains('{') {
+            out.push_str(",pid=\"");
+        } else {
+            out.push_str("{pid=\"");
+        }
+        out.push_str(&pid);
+        out.push_str("\"}");
         return;
     }
-    out.push('{');
 
-    let mut wrote_any = false;
-    for (label, value) in parsed.labels.iter().zip(parsed.values.iter()) {
-        if wrote_any {
-            out.push(',');
-        }
-        out.push_str(label);
-        out.push_str("=\"");
-        let value = match value {
-            Value::Null => String::new(),
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        out.push_str(&escape_label_value(&value));
-        out.push('"');
-        wrote_any = true;
-    }
-
-    if let Some(pid) = pid {
-        if wrote_any {
-            out.push(',');
-        }
-        out.push_str("pid=\"");
-        out.push_str(pid);
-        out.push('"');
-    }
-
-    out.push('}');
-}
-
-fn escape_label_value(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '\n' => out.push_str("\\n"),
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            _ => out.push(ch),
-        }
-    }
-    out
+    out.push_str(labels);
+    out.push_str("{pid=\"");
+    out.push_str(&pid);
+    out.push_str("\"}");
 }
 
 fn compare_keys(a: &EntryKey, b: &EntryKey) -> Ordering {
-    match a.json.cmp(&b.json) {
-        Ordering::Equal => a.pid.cmp(&b.pid),
+    match a.metric.family.cmp(&b.metric.family) {
+        Ordering::Equal => match a.metric.sample.cmp(&b.metric.sample) {
+            Ordering::Equal => match a.metric.labels.cmp(&b.metric.labels) {
+                Ordering::Equal => a.pid.cmp(&b.pid),
+                ord => ord,
+            },
+            ord => ord,
+        },
         ord => ord,
     }
 }
@@ -552,12 +538,23 @@ mod test {
         let dir = tempdir().unwrap();
         let p1 = dir.path().join("counter_100-0.db");
         let p2 = dir.path().join("counter_101-0.db");
-        let key = r#"["http_requests_total","http_requests_total",["method"],["GET"]]"#;
 
         let mut s1 = MmapMetricStore::open(&p1).unwrap();
         let mut s2 = MmapMetricStore::open(&p2).unwrap();
-        s1.increment(key, 2.0).unwrap();
-        s2.increment(key, 3.0).unwrap();
+        s1.increment(
+            "http_requests_total",
+            "http_requests_total",
+            r#"{method="GET"}"#,
+            2.0,
+        )
+        .unwrap();
+        s2.increment(
+            "http_requests_total",
+            "http_requests_total",
+            r#"{method="GET"}"#,
+            3.0,
+        )
+        .unwrap();
         s1.flush().unwrap();
         s2.flush().unwrap();
 
@@ -568,16 +565,49 @@ mod test {
     }
 
     #[test]
+    fn skips_old_version_files() {
+        let dir = tempdir().unwrap();
+        let p1 = dir.path().join("counter_102-0.db");
+        let p2 = dir.path().join("counter_103-0.db");
+
+        let mut s1 = MmapMetricStore::open(&p1).unwrap();
+        let mut s2 = MmapMetricStore::open(&p2).unwrap();
+        s1.increment(
+            "http_requests_total",
+            "http_requests_total",
+            r#"{method="GET"}"#,
+            2.0,
+        )
+        .unwrap();
+        s2.increment(
+            "http_requests_total",
+            "http_requests_total",
+            r#"{method="GET"}"#,
+            3.0,
+        )
+        .unwrap();
+        s1.flush().unwrap();
+        s2.flush().unwrap();
+
+        let mut bytes = fs::read(&p1).unwrap();
+        bytes[4..8].copy_from_slice(&0u32.to_ne_bytes());
+        fs::write(&p1, bytes).unwrap();
+
+        let rendered = aggregate_dir_to_prometheus_text(dir.path().to_str().unwrap()).unwrap();
+        assert!(rendered.contains("http_requests_total{method=\"GET\"} 3"));
+        assert!(!rendered.contains("http_requests_total{method=\"GET\"} 5"));
+    }
+
+    #[test]
     fn aggregate_gauge_all_keeps_pid_label() {
         let dir = tempdir().unwrap();
         let p1 = dir.path().join("gauge_all_worker_1-0.db");
         let p2 = dir.path().join("gauge_all_worker_2-0.db");
-        let key = r#"["queue_depth","queue_depth",[],[]]"#;
 
         let mut s1 = MmapMetricStore::open(&p1).unwrap();
         let mut s2 = MmapMetricStore::open(&p2).unwrap();
-        s1.set(key, 2.0).unwrap();
-        s2.set(key, 3.0).unwrap();
+        s1.set("queue_depth", "queue_depth", "", 2.0).unwrap();
+        s2.set("queue_depth", "queue_depth", "", 3.0).unwrap();
         s1.flush().unwrap();
         s2.flush().unwrap();
 
@@ -591,10 +621,15 @@ mod test {
     fn slash_in_label_is_not_json_escaped() {
         let dir = tempdir().unwrap();
         let p1 = dir.path().join("counter_200-0.db");
-        let key = r#"["http_requests_total","http_requests_total",["path"],["/hello"]]"#;
 
         let mut s1 = MmapMetricStore::open(&p1).unwrap();
-        s1.increment(key, 1.0).unwrap();
+        s1.increment(
+            "http_requests_total",
+            "http_requests_total",
+            r#"{path="/hello"}"#,
+            1.0,
+        )
+        .unwrap();
         s1.flush().unwrap();
 
         let rendered = aggregate_dir_to_prometheus_text(dir.path().to_str().unwrap()).unwrap();
@@ -606,10 +641,15 @@ mod test {
     fn aggregate_tolerates_corrupt_trailing_entry() {
         let dir = tempdir().unwrap();
         let p1 = dir.path().join("counter_300-0.db");
-        let key = r#"["http_requests_total","http_requests_total",["path"],["/ok"]]"#;
 
         let mut s1 = MmapMetricStore::open(&p1).unwrap();
-        s1.increment(key, 2.0).unwrap();
+        s1.increment(
+            "http_requests_total",
+            "http_requests_total",
+            r#"{path="/ok"}"#,
+            2.0,
+        )
+        .unwrap();
         s1.flush().unwrap();
 
         let mut bytes = fs::read(&p1).unwrap();
@@ -627,7 +667,9 @@ mod test {
     #[test]
     fn gc_deletes_dead_numeric_pid_files_only() {
         let dir = tempdir().unwrap();
-        let alive = dir.path().join(format!("counter_{}-0.db", std::process::id()));
+        let alive = dir
+            .path()
+            .join(format!("counter_{}-0.db", std::process::id()));
         let dead = dir.path().join("counter_2000000000-0.db");
         let non_numeric = dir.path().join("gauge_all_worker_1-0.db");
 
@@ -667,8 +709,8 @@ mod test {
         let writer = thread::spawn(move || {
             let mut store = MmapMetricStore::open(&writer_db).unwrap();
             for i in 0..iters {
-                let key = format!(r#"["{0}","{0}",["id"],["{1}"]]"#, key_prefix, i);
-                let _ = store.increment(&key, 1.0);
+                let labels = format!(r#"{{id="{}"}}"#, i);
+                let _ = store.increment(key_prefix, key_prefix, &labels, 1.0);
                 writer_writes.fetch_add(1, Ordering::Relaxed);
 
                 // Yield occasionally to increase interleaving with reader.

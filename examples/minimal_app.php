@@ -28,18 +28,28 @@ $method = strtolower($_SERVER['REQUEST_METHOD'] ?? 'get');
 $requestStart = microtime(true);
 $gcStart = gc_status();
 
-$metricKey = static function (string $family, string $name, array $labels = []): string {
-    $labelNames = array_keys($labels);
-    sort($labelNames);
-    $labelValues = [];
-    foreach ($labelNames as $label) {
-        $labelValues[] = (string) $labels[$label];
-    }
-    return json_encode(
-        [$family, $name, $labelNames, $labelValues],
-        JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+function escapeLabelValue(string $value): string
+{
+    return str_replace(
+        ["\\", "\n", '"'],
+        ["\\\\", "\\n", '\\"'],
+        $value,
     );
-};
+}
+
+function metricLabels(array $labels = []): string
+{
+    if ($labels === []) {
+        return '';
+    }
+
+    ksort($labels);
+    $parts = [];
+    foreach ($labels as $label => $value) {
+        $parts[] = $label . '="' . escapeLabelValue((string) $value) . '"';
+    }
+    return '{' . implode(',', $parts) . '}';
+}
 
 register_shutdown_function(static function () use (
     $counterStore,
@@ -47,7 +57,6 @@ register_shutdown_function(static function () use (
     $gaugeLivesumStore,
     $gaugeMaxStore,
     $metricsDir,
-    $metricKey,
     &$route,
     $method,
     $requestStart,
@@ -65,19 +74,25 @@ register_shutdown_function(static function () use (
     $labels = ['route' => $route, 'method' => $method, 'code' => (string) $finalCode];
 
     $counterStore->increment(
-        $metricKey('http_requests_total', 'http_requests_total', $labels),
+        'http_requests_total',
+        'http_requests_total',
+        metricLabels($labels),
         1.0,
     );
 
     $duration = microtime(true) - $requestStart;
     $counterStore->increment(
-        $metricKey('http_request_duration_seconds', 'http_request_duration_seconds_total', $labels),
+        'http_request_duration_seconds',
+        'http_request_duration_seconds_total',
+        metricLabels($labels),
         $duration,
     );
 
     $peakBytes = (float) memory_get_peak_usage(true);
     $gaugeMaxStore->set(
-        $metricKey('php_request_memory_peak_bytes', 'php_request_memory_peak_bytes', $labels),
+        'php_request_memory_peak_bytes',
+        'php_request_memory_peak_bytes',
+        metricLabels($labels),
         $peakBytes,
     );
 
@@ -89,44 +104,56 @@ register_shutdown_function(static function () use (
     $deltaFreeTime = max(0.0, ($gcEnd['free_time'] ?? 0.0) - ($gcStart['free_time'] ?? 0.0));
 
     $counterStore->increment(
-        $metricKey('php_gc_runs_total', 'php_gc_runs_total', $labels),
+        'php_gc_runs_total',
+        'php_gc_runs_total',
+        metricLabels($labels),
         (float) $deltaRuns,
     );
     $counterStore->increment(
-        $metricKey('php_gc_collected_total', 'php_gc_collected_total', $labels),
+        'php_gc_collected_total',
+        'php_gc_collected_total',
+        metricLabels($labels),
         (float) $deltaCollected,
     );
     $counterStore->increment(
-        $metricKey('php_gc_collector_time_seconds', 'php_gc_collector_time_seconds_total', $labels),
+        'php_gc_collector_time_seconds',
+        'php_gc_collector_time_seconds_total',
+        metricLabels($labels),
         $deltaCollectorTime,
     );
     $counterStore->increment(
-        $metricKey(
-            'php_gc_destructor_time_seconds',
-            'php_gc_destructor_time_seconds_total',
-            $labels,
-        ),
+        'php_gc_destructor_time_seconds',
+        'php_gc_destructor_time_seconds_total',
+        metricLabels($labels),
         $deltaDestructorTime,
     );
     $counterStore->increment(
-        $metricKey('php_gc_free_time_seconds', 'php_gc_free_time_seconds_total', $labels),
+        'php_gc_free_time_seconds',
+        'php_gc_free_time_seconds_total',
+        metricLabels($labels),
         $deltaFreeTime,
     );
 
     $gaugeAllStore->set(
-        $metricKey('demo_inflight_requests', 'demo_inflight_requests'),
+        'demo_inflight_requests',
+        'demo_inflight_requests',
+        '',
         0.0,
     );
 
 });
 
 $gaugeLivesumStore->set(
-    $metricKey('demo_workers_alive', 'demo_workers_alive'),
+    'demo_workers_alive',
+    'demo_workers_alive',
+    '',
     1.0,
 );
 
 $gaugeAllStore->set(
-    $metricKey('demo_inflight_requests', 'demo_inflight_requests'),
+    'demo_inflight_requests',
+    'demo_inflight_requests',
+    '',
     1.0,
 );
 
@@ -144,7 +171,9 @@ if ($path === '/hello') {
     header('Content-Type: text/plain; charset=utf-8');
     echo "hello\n";
     $counterStore->increment(
-        $metricKey('demo_hello_requests_total', 'demo_hello_requests_total'),
+        'demo_hello_requests_total',
+        'demo_hello_requests_total',
+        '',
         1.0,
     );
     exit;
@@ -170,7 +199,9 @@ if ($path === '/sleep') {
     sleep(5);
     echo "done\n";
     $counterStore->increment(
-        $metricKey('demo_sleep_requests_total', 'demo_sleep_requests_total'),
+        'demo_sleep_requests_total',
+        'demo_sleep_requests_total',
+        '',
         1.0,
     );
     exit;

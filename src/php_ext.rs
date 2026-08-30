@@ -20,17 +20,35 @@ impl PhpMmapStore {
     }
 
     #[php(defaults(by = 1.0))]
-    pub fn increment(&self, key_json: String, by: f64) -> PhpResult<f64> {
-        with_cached_store(&self.path, |store| store.increment(&key_json, by))
+    pub fn increment(
+        &self,
+        family: String,
+        sample: String,
+        labels: String,
+        by: f64,
+    ) -> PhpResult<f64> {
+        with_cached_store(&self.path, |store| {
+            store.increment(&family, &sample, &labels, by)
+        })
+        .map_err(to_php_exception)
+    }
+
+    pub fn set(
+        &self,
+        family: String,
+        sample: String,
+        labels: String,
+        value: f64,
+    ) -> PhpResult<f64> {
+        with_cached_store(&self.path, |store| {
+            store.set(&family, &sample, &labels, value)
+        })
+        .map_err(to_php_exception)
+    }
+
+    pub fn get(&self, family: String, sample: String, labels: String) -> PhpResult<f64> {
+        with_cached_store(&self.path, |store| store.get(&family, &sample, &labels))
             .map_err(to_php_exception)
-    }
-
-    pub fn set(&self, key_json: String, value: f64) -> PhpResult<f64> {
-        with_cached_store(&self.path, |store| store.set(&key_json, value)).map_err(to_php_exception)
-    }
-
-    pub fn get(&self, key_json: String) -> PhpResult<f64> {
-        with_cached_store(&self.path, |store| store.get(&key_json)).map_err(to_php_exception)
     }
 
     pub fn flush(&self) -> PhpResult<()> {
@@ -44,7 +62,12 @@ pub fn prometheus_mmap_render_dir(dir: String) -> PhpResult<String> {
 }
 
 #[php_function]
-#[php(defaults(budget_ms = 10, scan_limit = 64, delete_limit = 16, dead_grace_sec = 600))]
+#[php(defaults(
+    budget_ms = 10,
+    scan_limit = 64,
+    delete_limit = 16,
+    dead_grace_sec = 600
+))]
 pub fn prometheus_mmap_gc_dir(
     dir: String,
     budget_ms: i64,
@@ -56,14 +79,8 @@ pub fn prometheus_mmap_gc_dir(
     let scan_limit = scan_limit.max(1) as usize;
     let delete_limit = delete_limit.max(1) as usize;
     let dead_grace_sec = dead_grace_sec.max(0) as u64;
-    let deleted = gc_metric_files(
-        &dir,
-        budget_ms,
-        scan_limit,
-        delete_limit,
-        dead_grace_sec,
-    )
-    .map_err(to_php_exception)?;
+    let deleted = gc_metric_files(&dir, budget_ms, scan_limit, delete_limit, dead_grace_sec)
+        .map_err(to_php_exception)?;
     Ok(deleted as i64)
 }
 

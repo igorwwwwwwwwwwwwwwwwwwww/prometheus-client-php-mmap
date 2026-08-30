@@ -5,12 +5,15 @@ A sloppy Rust `ext-php-rs` extension inspired by [GitLab's
 
 ## Features
 
-- mmap-backed metric storage (`.db` files), compatible entry structure:
-  - 4-byte `used` header (+4 bytes pad)
-  - repeated entries: `[u32 key_len][key_json][space padding][f64 value]`
+- mmap-backed metric storage (`.db` files), versioned entry structure:
+  - 4-byte `used` header + 4-byte format `version`
+  - repeated entries: `[u32 family_len][u32 sample_len][u32 labels_len][family][sample][labels][space padding][f64 value]`
 - metric operations: `increment`, `set`, `get`, `flush`
 - multiprocess merge and render to Prometheus text format
 - native PHP extension API via [`ext-php-rs`](https://github.com/extphprs/ext-php-rs)
+
+Labels are stored in canonical Prometheus text form, sorted and escaped once at write time.
+Example labels blob: `{method="GET"}`.
 
 ## Consistency Model
 
@@ -18,7 +21,7 @@ A sloppy Rust `ext-php-rs` extension inspired by [GitLab's
 - **Publication order**: entry bytes are written first, then `used` is advanced. A `Release` fence is used before writing `used` so readers do not observe an advanced boundary before entry bytes are visible on weakly ordered CPUs.
 - **Architecture note**: x86-64 TSO often masks publication-order bugs, while weakly ordered architectures (e.g. ARM, RISC-V, POWER) can expose them. The `Release` fence keeps behavior portable and correct across architectures (typically a no-op on x86, real ordering barrier on weaker models).
 - **64-bit value writes**: metric values are encoded as 8-byte `f64`. On 64-bit targets this is typically observed atomically when naturally aligned; on 32-bit targets concurrent read/write can observe torn/intermediate values. Expected impact is transient wrong samples (not process crashes). Treat 32-bit as unsupported for strong correctness guarantees.
-- **Reader contract**: readers treat `used` as parse boundary and aggregate by scanning `*.db` files in the metrics directory.
+- **Reader contract**: readers treat `used` as parse boundary, aggregate by scanning `*.db` files in the metrics directory, and skip files with unknown format versions.
 - **Flush/durability**:
   - Writes update mmap memory immediately.
   - `flush()` requests `msync` and improves durability.
@@ -75,9 +78,9 @@ cargo php stubs --stdout
 ## Exported PHP API
 
 - `new PrometheusMmapStore(string $path)`
-- `PrometheusMmapStore::increment(string $keyJson, float $by = 1.0): float`
-- `PrometheusMmapStore::set(string $keyJson, float $value): float`
-- `PrometheusMmapStore::get(string $keyJson): float`
+- `PrometheusMmapStore::increment(string $family, string $sample, string $labels, float $by = 1.0): float`
+- `PrometheusMmapStore::set(string $family, string $sample, string $labels, float $value): float`
+- `PrometheusMmapStore::get(string $family, string $sample, string $labels): float`
 - `PrometheusMmapStore::flush(): void`
 - `prometheus_mmap_render_dir(string $dir): string`
 - `prometheus_mmap_gc_dir(string $dir, int $budgetMs = 10, int $scanLimit = 64, int $deleteLimit = 16, int $deadGraceSec = 600): int`
@@ -97,10 +100,10 @@ if (!is_dir($metricsDir)) {
 }
 
 $store = new PrometheusMmapStore($metricsDir . '/counter_' . getmypid() . '-0.db');
-$key = json_encode(['http_requests_total', 'http_requests_total', ['method'], ['GET']]);
+$labels = '{method="GET"}';
 
-$store->increment($key, 2.0);
-$store->increment($key, 3.0);
+$store->increment('http_requests_total', 'http_requests_total', $labels, 2.0);
+$store->increment('http_requests_total', 'http_requests_total', $labels, 3.0);
 $store->flush();
 
 echo prometheus_mmap_render_dir($metricsDir);

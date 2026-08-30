@@ -1106,8 +1106,6 @@ dependencies = [
  "ext-php-rs",
  "libc",
  "memmap2",
- "serde",
- "serde_json",
  "tempfile",
  "thiserror",
 ]

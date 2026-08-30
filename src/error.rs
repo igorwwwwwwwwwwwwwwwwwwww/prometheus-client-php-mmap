@@ -8,9 +8,6 @@ pub enum MmapError {
     #[error("invalid utf-8: {0}")]
     Utf8(#[from] std::str::Utf8Error),
 
-    #[error("json parse error: {0}")]
-    Json(#[from] serde_json::Error),
-
     #[error("offset {offset} out of bounds for len {len}")]
     OutOfBounds { offset: usize, len: usize },
 

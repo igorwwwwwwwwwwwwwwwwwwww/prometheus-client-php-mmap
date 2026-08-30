@@ -11,8 +11,6 @@ crate-type = ["rlib", "cdylib"]
 ext-php-rs = "0.15.6"
 libc = "0.2"
 memmap2 = "0.9"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
 
 [dev-dependencies]
