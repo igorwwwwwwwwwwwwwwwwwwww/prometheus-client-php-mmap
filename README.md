@@ -92,6 +92,8 @@ cargo php stubs --stdout
 
 ## Example usage
 
+Low-level extension API:
+
 ```php
 <?php
 $metricsDir = '/tmp/prometheus-mmap';
@@ -108,3 +110,5 @@ $store->flush();
 
 echo prometheus_mmap_render_dir($metricsDir);
 ```
+
+For a small userspace wiring layer, see `examples/lib.php` and `examples/minimal_app.php`.
