@@ -33,10 +33,8 @@ Example labels blob: `{method="GET"}`.
 
 ## TODO
 
-- Evaluate implementing `PrometheusProto` (binary protobuf exposition format) in addition to text format.
+- Add `PrometheusProto` exposition with native histogram storage, plus richer histogram examples/interoperability coverage.
   See: [content negotiation docs](https://prometheus.io/docs/instrumenting/content_negotiation/) and [exposition formats docs](https://prometheus.io/docs/instrumenting/exposition_formats/)
-- Add native histogram storage + `PrometheusProto` exposition path.
-- Add richer histogram examples/interoperability coverage for the userspace classic histogram helper.
 - Track feature parity with Python multiprocess mode where it makes sense (modes/lifecycle/operational guidance): [client_python multiprocess docs](https://github.com/prometheus/client_python/blob/master/docs/content/multiprocess/_index.md)
 - Make GC more robust to PID reuse by extending filename identity (for example PID + worker start marker).
 - Evaluate optional writer-ownership locking for file claim/allocation (Ruby-style exclusive lock) to safely support surrogate/shared worker identifiers.
