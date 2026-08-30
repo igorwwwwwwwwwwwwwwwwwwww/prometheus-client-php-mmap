@@ -42,7 +42,6 @@ Example labels blob: `{method="GET"}`.
 - Add an interoperability test harness against a local Prometheus instance/repo scrape to validate end-to-end ingestion/render behavior.
 - Evaluate extracting a standalone multiprocess Prometheus mmap core/toolkit (shared format + merge/GC), with thin PHP/Ruby bindings.
 - Evaluate a separate exporter daemon for mmap read/merge/render, so app workers only write metrics.
-- Add explicit persistent-handle lifecycle APIs (e.g. `close_all` / `reopen(path)`) to avoid requiring full php-fpm restart after manual file cleanup.
 
 ## Tool versions
 
