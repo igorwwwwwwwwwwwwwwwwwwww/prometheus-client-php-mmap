@@ -169,3 +169,47 @@ final class PrometheusMmapGauge extends PrometheusMmapMetric
         return $this->store->set($this->family, $this->sample, $encodedLabels, $current + $by);
     }
 }
+
+final class PrometheusMmapRequestMetrics
+{
+    public function __construct(
+        private string $method,
+        private int $requestStartNs,
+        private array $gcStart,
+        private PrometheusMmapCounter $requestCounter,
+        private PrometheusMmapCounter $requestDurationCounter,
+        private PrometheusMmapGauge $requestMemoryPeakGauge,
+        private PrometheusMmapCounter $gcRunsCounter,
+        private PrometheusMmapCounter $gcCollectedCounter,
+        private PrometheusMmapCounter $gcCollectorTimeCounter,
+        private PrometheusMmapCounter $gcDestructorTimeCounter,
+        private PrometheusMmapCounter $gcFreeTimeCounter,
+        private PrometheusMmapGauge $inflightGauge,
+    ) {
+    }
+
+    public function record(string $route): void
+    {
+        $finalCode = http_response_code();
+        if (!is_int($finalCode) || $finalCode <= 0) {
+            $finalCode = 200;
+        }
+
+        $labels = ['route' => $route, 'method' => $this->method, 'code' => (string) $finalCode];
+
+        $this->requestCounter->inc($labels, 1.0);
+        $this->requestDurationCounter->inc(
+            $labels,
+            (hrtime(true) - $this->requestStartNs) / 1_000_000_000,
+        );
+        $this->requestMemoryPeakGauge->set($labels, (float) memory_get_peak_usage(true));
+
+        $gcEnd = gc_status();
+        $this->gcRunsCounter->inc($labels, (float) max(0, ($gcEnd['runs'] ?? 0) - ($this->gcStart['runs'] ?? 0)));
+        $this->gcCollectedCounter->inc($labels, (float) max(0, ($gcEnd['collected'] ?? 0) - ($this->gcStart['collected'] ?? 0)));
+        $this->gcCollectorTimeCounter->inc($labels, max(0.0, ($gcEnd['collector_time'] ?? 0.0) - ($this->gcStart['collector_time'] ?? 0.0)));
+        $this->gcDestructorTimeCounter->inc($labels, max(0.0, ($gcEnd['destructor_time'] ?? 0.0) - ($this->gcStart['destructor_time'] ?? 0.0)));
+        $this->gcFreeTimeCounter->inc($labels, max(0.0, ($gcEnd['free_time'] ?? 0.0) - ($this->gcStart['free_time'] ?? 0.0)));
+        $this->inflightGauge->set([], 0.0);
+    }
+}

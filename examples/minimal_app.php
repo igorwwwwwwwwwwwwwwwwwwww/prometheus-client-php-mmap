@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+$requestStartNs = hrtime(true);
+
 require_once __DIR__ . '/lib.php';
 
 $metricsDir = __DIR__ . '/metrics';
@@ -45,11 +47,11 @@ $inflightGauge = $registry->gauge('demo_inflight_requests', [], 'all');
 $workersAliveGauge = $registry->gauge('demo_workers_alive', [], 'livesum');
 
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
-$method = strtolower($_SERVER['REQUEST_METHOD'] ?? 'get');
-$requestStart = microtime(true);
-$gcStart = gc_status();
 
-register_shutdown_function(static function () use (
+$requestMetrics = new PrometheusMmapRequestMetrics(
+    strtolower($_SERVER['REQUEST_METHOD'] ?? 'get'),
+    $requestStartNs,
+    gc_status(),
     $requestCounter,
     $requestDurationCounter,
     $requestMemoryPeakGauge,
@@ -59,45 +61,13 @@ register_shutdown_function(static function () use (
     $gcDestructorTimeCounter,
     $gcFreeTimeCounter,
     $inflightGauge,
-    &$route,
-    $method,
-    $requestStart,
-    $gcStart,
-): void {
+);
+
+register_shutdown_function(static function () use ($requestMetrics, &$route): void {
     if (function_exists('fastcgi_finish_request')) {
         fastcgi_finish_request();
     }
-
-    $finalCode = http_response_code();
-    if (!is_int($finalCode) || $finalCode <= 0) {
-        $finalCode = 200;
-    }
-
-    $labels = ['route' => $route, 'method' => $method, 'code' => (string) $finalCode];
-
-    $requestCounter->inc($labels, 1.0);
-
-    $duration = microtime(true) - $requestStart;
-    $requestDurationCounter->inc($labels, $duration);
-
-    $peakBytes = (float) memory_get_peak_usage(true);
-    $requestMemoryPeakGauge->set($labels, $peakBytes);
-
-    $gcEnd = gc_status();
-    $deltaRuns = max(0, ($gcEnd['runs'] ?? 0) - ($gcStart['runs'] ?? 0));
-    $deltaCollected = max(0, ($gcEnd['collected'] ?? 0) - ($gcStart['collected'] ?? 0));
-    $deltaCollectorTime = max(0.0, ($gcEnd['collector_time'] ?? 0.0) - ($gcStart['collector_time'] ?? 0.0));
-    $deltaDestructorTime = max(0.0, ($gcEnd['destructor_time'] ?? 0.0) - ($gcStart['destructor_time'] ?? 0.0));
-    $deltaFreeTime = max(0.0, ($gcEnd['free_time'] ?? 0.0) - ($gcStart['free_time'] ?? 0.0));
-
-    $gcRunsCounter->inc($labels, (float) $deltaRuns);
-    $gcCollectedCounter->inc($labels, (float) $deltaCollected);
-    $gcCollectorTimeCounter->inc($labels, $deltaCollectorTime);
-    $gcDestructorTimeCounter->inc($labels, $deltaDestructorTime);
-    $gcFreeTimeCounter->inc($labels, $deltaFreeTime);
-
-    $inflightGauge->set([], 0.0);
-
+    $requestMetrics->record($route);
 });
 
 $workersAliveGauge->set([], 1.0);
