@@ -109,4 +109,4 @@ $store->flush();
 echo prometheus_mmap_render_dir($metricsDir);
 ```
 
-For a small userspace wiring layer, including a classic histogram helper built from counter samples, see `examples/lib.php` and `examples/minimal_app.php`.
+For a small userspace wiring layer, including a classic histogram helper and cheap PHP request/runtime metrics, see `examples/lib.php` and `examples/minimal_app.php`.

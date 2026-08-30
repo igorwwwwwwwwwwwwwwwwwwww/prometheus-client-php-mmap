@@ -9,57 +9,16 @@ require_once __DIR__ . '/lib.php';
 $metricsDir = __DIR__ . '/metrics';
 $registry = new PrometheusMmapRegistry($metricsDir);
 
-$requestCounter = $registry->counter('http_requests_total', ['code', 'method', 'route']);
-$requestDurationHistogram = $registry->histogram(
-    'http_request_duration_seconds',
-    ['code', 'method', 'route'],
-);
-$requestMemoryPeakGauge = $registry->gauge(
-    'php_request_memory_peak_bytes',
-    ['code', 'method', 'route'],
-    'max',
-);
-$gcRunsCounter = $registry->counter('php_gc_runs_total', ['code', 'method', 'route']);
-$gcCollectedCounter = $registry->counter('php_gc_collected_total', ['code', 'method', 'route']);
-$gcCollectorTimeCounter = $registry->counter(
-    'php_gc_collector_time_seconds',
-    ['code', 'method', 'route'],
-    'php_gc_collector_time_seconds_total',
-);
-$gcDestructorTimeCounter = $registry->counter(
-    'php_gc_destructor_time_seconds',
-    ['code', 'method', 'route'],
-    'php_gc_destructor_time_seconds_total',
-);
-$gcFreeTimeCounter = $registry->counter(
-    'php_gc_free_time_seconds',
-    ['code', 'method', 'route'],
-    'php_gc_free_time_seconds_total',
-);
 $helloCounter = $registry->counter('demo_hello_requests_total');
 $sleepCounter = $registry->counter('demo_sleep_requests_total');
-
-// Gauge files demonstrate multiprocess modes:
-// - all: keep one series per worker (pid label retained)
-// - livesum: sum worker values into one series (pid not retained)
-$inflightGauge = $registry->gauge('demo_inflight_requests', [], 'all');
-$workersAliveGauge = $registry->gauge('demo_workers_alive', [], 'livesum');
 
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 
 $requestMetrics = new PrometheusMmapRequestMetrics(
+    $registry,
     strtolower($_SERVER['REQUEST_METHOD'] ?? 'get'),
     $requestStartNs,
     gc_status(),
-    $requestCounter,
-    $requestDurationHistogram,
-    $requestMemoryPeakGauge,
-    $gcRunsCounter,
-    $gcCollectedCounter,
-    $gcCollectorTimeCounter,
-    $gcDestructorTimeCounter,
-    $gcFreeTimeCounter,
-    $inflightGauge,
 );
 
 register_shutdown_function(static function () use ($requestMetrics, &$route): void {
@@ -69,8 +28,7 @@ register_shutdown_function(static function () use ($requestMetrics, &$route): vo
     $requestMetrics->record($route);
 });
 
-$workersAliveGauge->set([], 1.0);
-$inflightGauge->set([], 1.0);
+$requestMetrics->requestStart();
 
 if ($path === '/') {
     $route = '/';

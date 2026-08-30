@@ -305,20 +305,46 @@ final class PrometheusMmapHistogram
 
 final class PrometheusMmapRequestMetrics
 {
+    private PrometheusMmapCounter $requestCounter;
+    private PrometheusMmapHistogram $requestDurationHistogram;
+    private PrometheusMmapGauge $requestMemoryUsageGauge;
+    private PrometheusMmapGauge $requestMemoryAllocatedGauge;
+    private PrometheusMmapGauge $requestMemoryPeakGauge;
+    private PrometheusMmapGauge $requestMemoryPeakAllocatedGauge;
+    private PrometheusMmapCounter $gcRunsCounter;
+    private PrometheusMmapCounter $gcCollectedCounter;
+    private PrometheusMmapCounter $gcCollectorTimeCounter;
+    private PrometheusMmapCounter $gcDestructorTimeCounter;
+    private PrometheusMmapCounter $gcFreeTimeCounter;
+    private PrometheusMmapGauge $inflightGauge;
+    private PrometheusMmapGauge $workersAliveGauge;
+
     public function __construct(
+        private PrometheusMmapRegistry $registry,
         private string $method,
         private int $requestStartNs,
         private array $gcStart,
-        private PrometheusMmapCounter $requestCounter,
-        private PrometheusMmapHistogram $requestDurationHistogram,
-        private PrometheusMmapGauge $requestMemoryPeakGauge,
-        private PrometheusMmapCounter $gcRunsCounter,
-        private PrometheusMmapCounter $gcCollectedCounter,
-        private PrometheusMmapCounter $gcCollectorTimeCounter,
-        private PrometheusMmapCounter $gcDestructorTimeCounter,
-        private PrometheusMmapCounter $gcFreeTimeCounter,
-        private PrometheusMmapGauge $inflightGauge,
     ) {
+        $labels = ['code', 'method', 'route'];
+        $this->requestCounter = $registry->counter('http_requests_total', $labels);
+        $this->requestDurationHistogram = $registry->histogram('http_request_duration_seconds', $labels);
+        $this->requestMemoryUsageGauge = $registry->gauge('php_request_memory_usage_bytes', $labels, 'max');
+        $this->requestMemoryAllocatedGauge = $registry->gauge('php_request_memory_allocated_bytes', $labels, 'max');
+        $this->requestMemoryPeakGauge = $registry->gauge('php_request_memory_peak_bytes', $labels, 'max');
+        $this->requestMemoryPeakAllocatedGauge = $registry->gauge('php_request_memory_peak_allocated_bytes', $labels, 'max');
+        $this->gcRunsCounter = $registry->counter('php_gc_runs_total', $labels);
+        $this->gcCollectedCounter = $registry->counter('php_gc_collected_total', $labels);
+        $this->gcCollectorTimeCounter = $registry->counter('php_gc_collector_time_seconds', $labels, 'php_gc_collector_time_seconds_total');
+        $this->gcDestructorTimeCounter = $registry->counter('php_gc_destructor_time_seconds', $labels, 'php_gc_destructor_time_seconds_total');
+        $this->gcFreeTimeCounter = $registry->counter('php_gc_free_time_seconds', $labels, 'php_gc_free_time_seconds_total');
+        $this->inflightGauge = $registry->gauge('php_requests_in_flight', [], 'all');
+        $this->workersAliveGauge = $registry->gauge('php_workers_alive', [], 'livesum');
+    }
+
+    public function requestStart(): void
+    {
+        $this->workersAliveGauge->set([], 1.0);
+        $this->inflightGauge->set([], 1.0);
     }
 
     public function record(string $route): void
@@ -335,7 +361,10 @@ final class PrometheusMmapRequestMetrics
             $labels,
             (hrtime(true) - $this->requestStartNs) / 1_000_000_000,
         );
-        $this->requestMemoryPeakGauge->set($labels, (float) memory_get_peak_usage(true));
+        $this->requestMemoryUsageGauge->set($labels, (float) memory_get_usage(false));
+        $this->requestMemoryAllocatedGauge->set($labels, (float) memory_get_usage(true));
+        $this->requestMemoryPeakGauge->set($labels, (float) memory_get_peak_usage(false));
+        $this->requestMemoryPeakAllocatedGauge->set($labels, (float) memory_get_peak_usage(true));
 
         $gcEnd = gc_status();
         $this->gcRunsCounter->inc($labels, (float) max(0, ($gcEnd['runs'] ?? 0) - ($this->gcStart['runs'] ?? 0)));
