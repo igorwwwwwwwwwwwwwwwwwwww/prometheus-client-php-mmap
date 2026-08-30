@@ -35,7 +35,8 @@ Example labels blob: `{method="GET"}`.
 
 - Evaluate implementing `PrometheusProto` (binary protobuf exposition format) in addition to text format.
   See: [content negotiation docs](https://prometheus.io/docs/instrumenting/content_negotiation/) and [exposition formats docs](https://prometheus.io/docs/instrumenting/exposition_formats/)
-- Add real histogram emission in the PHP demo (`_bucket`, `_sum`, `_count`) with stable bucket boundaries.
+- Add native histogram storage + `PrometheusProto` exposition path.
+- Add richer histogram examples/interoperability coverage for the userspace classic histogram helper.
 - Track feature parity with Python multiprocess mode where it makes sense (modes/lifecycle/operational guidance): [client_python multiprocess docs](https://github.com/prometheus/client_python/blob/master/docs/content/multiprocess/_index.md)
 - Make GC more robust to PID reuse by extending filename identity (for example PID + worker start marker).
 - Evaluate optional writer-ownership locking for file claim/allocation (Ruby-style exclusive lock) to safely support surrogate/shared worker identifiers.
@@ -111,4 +112,4 @@ $store->flush();
 echo prometheus_mmap_render_dir($metricsDir);
 ```
 
-For a small userspace wiring layer, see `examples/lib.php` and `examples/minimal_app.php`.
+For a small userspace wiring layer, including a classic histogram helper built from counter samples, see `examples/lib.php` and `examples/minimal_app.php`.

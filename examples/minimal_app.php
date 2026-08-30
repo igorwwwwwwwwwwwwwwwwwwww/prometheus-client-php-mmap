@@ -10,10 +10,9 @@ $metricsDir = __DIR__ . '/metrics';
 $registry = new PrometheusMmapRegistry($metricsDir);
 
 $requestCounter = $registry->counter('http_requests_total', ['code', 'method', 'route']);
-$requestDurationCounter = $registry->counter(
+$requestDurationHistogram = $registry->histogram(
     'http_request_duration_seconds',
     ['code', 'method', 'route'],
-    'http_request_duration_seconds_total',
 );
 $requestMemoryPeakGauge = $registry->gauge(
     'php_request_memory_peak_bytes',
@@ -53,7 +52,7 @@ $requestMetrics = new PrometheusMmapRequestMetrics(
     $requestStartNs,
     gc_status(),
     $requestCounter,
-    $requestDurationCounter,
+    $requestDurationHistogram,
     $requestMemoryPeakGauge,
     $gcRunsCounter,
     $gcCollectedCounter,

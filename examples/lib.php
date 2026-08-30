@@ -25,6 +25,14 @@ function prometheus_mmap_metric_labels(array $labels = []): string
     return '{' . implode(',', $parts) . '}';
 }
 
+function prometheus_mmap_format_bucket_bound(float $bound): string
+{
+    if (is_infinite($bound) && $bound > 0) {
+        return '+Inf';
+    }
+    return sprintf('%.15g', $bound);
+}
+
 final class PrometheusMmapRegistry
 {
     private string $dir;
@@ -68,6 +76,19 @@ final class PrometheusMmapRegistry
             $family,
             $sample ?? $family,
             $labelNames,
+        );
+    }
+
+    public function histogram(
+        string $family,
+        array $labelNames = [],
+        ?array $buckets = null,
+    ): PrometheusMmapHistogram {
+        return new PrometheusMmapHistogram(
+            $this->store('histogram_' . $this->workerId . '-0.db'),
+            $family,
+            $labelNames,
+            $buckets ?? PrometheusMmapHistogram::defaultBuckets(),
         );
     }
 
@@ -170,6 +191,118 @@ final class PrometheusMmapGauge extends PrometheusMmapMetric
     }
 }
 
+final class PrometheusMmapHistogram
+{
+    private PrometheusMmapStore $store;
+    private string $family;
+    private array $labelNames;
+    private array $buckets;
+
+    public function __construct(PrometheusMmapStore $store, string $family, array $labelNames, array $buckets)
+    {
+        $this->store = $store;
+        $this->family = $family;
+        $this->labelNames = $labelNames;
+        $this->buckets = self::normalizeBuckets($buckets);
+
+        if (!preg_match('/^[a-zA-Z_:][a-zA-Z0-9_:]*$/', $family)) {
+            throw new InvalidArgumentException('invalid metric name: ' . $family);
+        }
+        foreach ($labelNames as $labelName) {
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $labelName)) {
+                throw new InvalidArgumentException('invalid label name: ' . $labelName);
+            }
+            if ($labelName === 'le') {
+                throw new InvalidArgumentException('histogram label names must not include reserved label: le');
+            }
+        }
+    }
+
+    public static function defaultBuckets(): array
+    {
+        return [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
+    }
+
+    public function observe(array $labels = [], float $value = 0.0): void
+    {
+        $encodedLabels = $this->labels($labels);
+        $this->store->increment($this->family, $this->family . '_sum', $encodedLabels, $value);
+        $this->store->increment($this->family, $this->family . '_count', $encodedLabels, 1.0);
+
+        foreach ($this->buckets as $upperBound) {
+            if ($value <= $upperBound) {
+                $this->store->increment(
+                    $this->family,
+                    $this->family . '_bucket',
+                    $this->bucketLabels($labels, prometheus_mmap_format_bucket_bound($upperBound)),
+                    1.0,
+                );
+            }
+        }
+
+        $this->store->increment(
+            $this->family,
+            $this->family . '_bucket',
+            $this->bucketLabels($labels, '+Inf'),
+            1.0,
+        );
+    }
+
+    private function labels(array $labels): string
+    {
+        $expected = $this->labelNames;
+        sort($expected);
+
+        $actual = array_keys($labels);
+        sort($actual);
+
+        if ($expected !== $actual) {
+            throw new InvalidArgumentException(sprintf(
+                'labels for %s must be exactly [%s], got [%s]',
+                $this->family,
+                implode(', ', $expected),
+                implode(', ', $actual),
+            ));
+        }
+
+        return prometheus_mmap_metric_labels($labels);
+    }
+
+    private function bucketLabels(array $labels, string $le): string
+    {
+        $labels['le'] = $le;
+        return prometheus_mmap_metric_labels($labels);
+    }
+
+    private static function normalizeBuckets(array $buckets): array
+    {
+        if ($buckets === []) {
+            throw new InvalidArgumentException('histogram buckets must not be empty');
+        }
+
+        $normalized = [];
+        foreach ($buckets as $bucket) {
+            if (!is_int($bucket) && !is_float($bucket)) {
+                throw new InvalidArgumentException('histogram buckets must be numeric');
+            }
+            $bucket = (float) $bucket;
+            if (is_nan($bucket) || is_infinite($bucket)) {
+                throw new InvalidArgumentException('histogram buckets must be finite');
+            }
+            $normalized[] = $bucket;
+        }
+
+        sort($normalized, SORT_NUMERIC);
+        for ($i = 1, $n = count($normalized); $i < $n; $i++) {
+            if ($normalized[$i - 1] >= $normalized[$i]) {
+                throw new InvalidArgumentException('histogram buckets must be strictly increasing');
+            }
+        }
+
+        return $normalized;
+    }
+}
+
 final class PrometheusMmapRequestMetrics
 {
     public function __construct(
@@ -177,7 +310,7 @@ final class PrometheusMmapRequestMetrics
         private int $requestStartNs,
         private array $gcStart,
         private PrometheusMmapCounter $requestCounter,
-        private PrometheusMmapCounter $requestDurationCounter,
+        private PrometheusMmapHistogram $requestDurationHistogram,
         private PrometheusMmapGauge $requestMemoryPeakGauge,
         private PrometheusMmapCounter $gcRunsCounter,
         private PrometheusMmapCounter $gcCollectedCounter,
@@ -198,7 +331,7 @@ final class PrometheusMmapRequestMetrics
         $labels = ['route' => $route, 'method' => $this->method, 'code' => (string) $finalCode];
 
         $this->requestCounter->inc($labels, 1.0);
-        $this->requestDurationCounter->inc(
+        $this->requestDurationHistogram->observe(
             $labels,
             (hrtime(true) - $this->requestStartNs) / 1_000_000_000,
         );
