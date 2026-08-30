@@ -18,7 +18,7 @@ pub enum MetricType {
 }
 
 impl MetricType {
-    fn as_prometheus_type(self) -> &'static str {
+    pub(crate) fn as_prometheus_type(self) -> &'static str {
         match self {
             MetricType::Counter => "counter",
             MetricType::Gauge => "gauge",
@@ -27,7 +27,7 @@ impl MetricType {
         }
     }
 
-    fn from_file_prefix(s: &str) -> Result<Self> {
+    pub(crate) fn from_file_prefix(s: &str) -> Result<Self> {
         match s {
             "counter" => Ok(Self::Counter),
             "gauge" => Ok(Self::Gauge),
@@ -48,7 +48,7 @@ pub enum MultiprocessMode {
 }
 
 impl MultiprocessMode {
-    fn from_file_part(s: &str) -> Result<Self> {
+    pub(crate) fn from_file_part(s: &str) -> Result<Self> {
         match s {
             "min" => Ok(Self::Min),
             "max" => Ok(Self::Max),

@@ -2,6 +2,7 @@
 
 pub mod aggregate;
 pub mod error;
+pub mod exporter;
 pub mod gc;
 pub mod metric_key;
 pub mod mmap_file;

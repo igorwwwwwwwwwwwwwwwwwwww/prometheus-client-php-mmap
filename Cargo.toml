@@ -8,10 +8,12 @@ name = "prometheus_client_php_mmap"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
+axum = "0.8.9"
 ext-php-rs = "0.15.6"
 libc = "0.2"
 memmap2 = "0.9"
 thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 
 [dev-dependencies]
 criterion = "0.5"
