@@ -88,6 +88,7 @@ cargo run --release --bin prometheus-mmap-exporter -- \
 
 - `GET /metrics` returns Prometheus text exposition (`text/plain; version=0.0.4`).
 - `GET /healthz` returns `ok` when the process is running.
+- `prometheus_mmap_exporter_file_errors` reports the number of `*.db` files skipped during the most recent scrape. Invalid, unreadable, or malformed files are logged to stderr and do not prevent healthy files from being exported.
 
 For example, configure Prometheus to scrape it:
 

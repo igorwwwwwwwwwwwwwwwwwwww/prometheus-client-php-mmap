@@ -68,26 +68,55 @@ impl CachedDirExporter {
     }
 
     pub fn render(&mut self) -> Result<String> {
-        self.refresh()?;
+        let mut file_errors = self.refresh()?;
 
         let mut merged: HashMap<EntryKey, EntryMeta> = HashMap::new();
-        for cached in self.files.values_mut() {
-            cached.refresh_entries()?;
+        let mut failed = HashSet::new();
+        for (path, cached) in &mut self.files {
+            if let Err(err) = cached.refresh_entries() {
+                record_file_error(path, &err);
+                file_errors += 1;
+                failed.insert(path.clone());
+                continue;
+            }
             if !cached.active {
                 continue;
             }
 
-            let used = cached.current_used()?;
+            let used = match cached.current_used() {
+                Ok(used) => used,
+                Err(err) => {
+                    record_file_error(path, &err);
+                    file_errors += 1;
+                    failed.insert(path.clone());
+                    continue;
+                }
+            };
             let pid_significant =
                 is_pid_significant(cached.params.metric_type, cached.params.multiprocess_mode);
             for entry in &cached.entries {
-                if entry.value_offset + 8 > used {
+                let Some(value_end) = entry.value_offset.checked_add(8) else {
+                    record_file_error(path, "value offset overflow");
+                    file_errors += 1;
+                    failed.insert(path.clone());
+                    break;
+                };
+                if value_end > used {
                     continue;
                 }
+                let value = match cached.read_value(entry.value_offset) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        record_file_error(path, &err);
+                        file_errors += 1;
+                        failed.insert(path.clone());
+                        break;
+                    }
+                };
                 let incoming = EntryMeta {
                     mode: cached.params.multiprocess_mode,
                     metric_type: cached.params.metric_type,
-                    value: cached.read_value(entry.value_offset)?,
+                    value,
                 };
                 let entry_key = EntryKey {
                     metric: entry.metric.clone(),
@@ -100,33 +129,42 @@ impl CachedDirExporter {
             }
         }
 
-        render(merged)
+        self.files.retain(|path, _| !failed.contains(path));
+        render(merged, file_errors)
     }
 
-    fn refresh(&mut self) -> Result<()> {
-        let discovered = discover_metric_files(&self.dir)?;
+    fn refresh(&mut self) -> Result<usize> {
+        let (discovered, mut file_errors) = discover_metric_files(&self.dir)?;
         let mut seen = HashSet::new();
 
         for params in discovered {
             seen.insert(params.path.clone());
-            match self.files.get_mut(&params.path) {
+            let path = params.path.clone();
+            let result: Result<()> = (|| match self.files.get_mut(&path) {
                 Some(cached) => {
                     cached.params = params.clone();
-                    if cached.identity != file_identity(&std::fs::metadata(&params.path)?) {
+                    let metadata = std::fs::metadata(&path)?;
+                    if cached.identity != file_identity(&metadata) {
                         *cached = CachedFile::open(params)?;
                     } else {
                         cached.refresh_map_if_needed()?;
                     }
+                    Ok(())
                 }
                 None => {
-                    self.files
-                        .insert(params.path.clone(), CachedFile::open(params)?);
+                    self.files.insert(path.clone(), CachedFile::open(params)?);
+                    Ok(())
                 }
+            })();
+            if let Err(err) = result {
+                record_file_error(&path, &err);
+                file_errors += 1;
+                self.files.remove(&path);
             }
         }
 
         self.files.retain(|path, _| seen.contains(path));
-        Ok(())
+        Ok(file_errors)
     }
 }
 
@@ -253,21 +291,50 @@ fn map_file(file: &File, len: usize) -> Result<Mmap> {
     Ok(unsafe { MmapOptions::new().len(len).map(file)? })
 }
 
-fn discover_metric_files(dir: &Path) -> Result<Vec<FileParams>> {
+fn discover_metric_files(dir: &Path) -> Result<(Vec<FileParams>, usize)> {
     let mut files = Vec::new();
+    let mut file_errors = 0;
     for entry in read_dir(dir)? {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                eprintln!("prometheus-mmap-exporter: unable to read directory entry: {err}");
+                file_errors += 1;
+                continue;
+            }
+        };
         let path = entry.path();
         if path.extension() != Some(OsStr::new("db")) {
             continue;
         }
-        if !entry.file_type()?.is_file() {
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) => {
+                record_file_error(&path, &err);
+                file_errors += 1;
+                continue;
+            }
+        };
+        if !file_type.is_file() {
             continue;
         }
-        files.push(parse_file_params(&path)?);
+        match parse_file_params(&path) {
+            Ok(params) => files.push(params),
+            Err(err) => {
+                record_file_error(&path, &err);
+                file_errors += 1;
+            }
+        }
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(files)
+    Ok((files, file_errors))
+}
+
+fn record_file_error(path: &Path, err: impl std::fmt::Display) {
+    eprintln!(
+        "prometheus-mmap-exporter: skipping '{}': {err}",
+        path.display()
+    );
 }
 
 fn parse_file_params(path: &Path) -> Result<FileParams> {
@@ -348,7 +415,7 @@ fn is_pid_significant(metric_type: MetricType, mode: MultiprocessMode) -> bool {
     )
 }
 
-fn render(merged: HashMap<EntryKey, EntryMeta>) -> Result<String> {
+fn render(merged: HashMap<EntryKey, EntryMeta>, file_errors: usize) -> Result<String> {
     let mut rows: Vec<(EntryKey, EntryMeta)> = merged.into_iter().collect();
     rows.sort_by(|a, b| compare_keys(&a.0, &b.0));
 
@@ -378,6 +445,12 @@ fn render(merged: HashMap<EntryKey, EntryMeta>) -> Result<String> {
         out.push_str(&meta.value.to_string());
         out.push('\n');
     }
+
+    out.push_str("# HELP prometheus_mmap_exporter_file_errors Number of metric files skipped during this scrape\n");
+    out.push_str("# TYPE prometheus_mmap_exporter_file_errors gauge\n");
+    out.push_str("prometheus_mmap_exporter_file_errors ");
+    out.push_str(&file_errors.to_string());
+    out.push('\n');
 
     Ok(out)
 }
@@ -441,7 +514,8 @@ fn file_identity(meta: &Metadata) -> Option<FileIdentity> {
 #[cfg(test)]
 mod test {
     use super::CachedDirExporter;
-    use crate::mmap_file::MmapMetricStore;
+    use crate::mmap_file::{FILE_FORMAT_VERSION, MmapMetricStore};
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]
@@ -484,5 +558,28 @@ mod test {
         let rendered = exporter.render().unwrap();
         assert!(rendered.contains("http_requests_total{route=\"/\"} 3"));
         assert!(rendered.contains("http_requests_total{route=\"/hello\"} 1"));
+    }
+
+    #[test]
+    fn exporter_skips_corrupt_file_and_reports_it() {
+        let dir = tempdir().unwrap();
+        let healthy_path = dir.path().join("counter_123-0.db");
+        let mut store = MmapMetricStore::open(&healthy_path).unwrap();
+        store
+            .increment("requests_total", "requests_total", "", 1.0)
+            .unwrap();
+        store.flush().unwrap();
+
+        let corrupt_path = dir.path().join("counter_456-0.db");
+        let mut corrupt = Vec::new();
+        corrupt.extend_from_slice(&1024_u32.to_ne_bytes());
+        corrupt.extend_from_slice(&FILE_FORMAT_VERSION.to_ne_bytes());
+        fs::write(corrupt_path, corrupt).unwrap();
+
+        let mut exporter = CachedDirExporter::new(dir.path()).unwrap();
+        let rendered = exporter.render().unwrap();
+
+        assert!(rendered.contains("requests_total 1"));
+        assert!(rendered.contains("prometheus_mmap_exporter_file_errors 1"));
     }
 }

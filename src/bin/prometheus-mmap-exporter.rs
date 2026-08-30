@@ -127,11 +127,9 @@ mod tests {
             response.headers().get(header::CONTENT_TYPE).unwrap(),
             "text/plain; version=0.0.4; charset=utf-8"
         );
-        assert!(
-            to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            "# HELP prometheus_mmap_exporter_file_errors Number of metric files skipped during this scrape\n# TYPE prometheus_mmap_exporter_file_errors gauge\nprometheus_mmap_exporter_file_errors 0\n"
         );
     }
 
