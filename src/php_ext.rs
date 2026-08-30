@@ -1,5 +1,6 @@
-use crate::aggregate::{aggregate_dir_to_prometheus_text, gc_metric_files};
+use crate::aggregate::aggregate_dir_to_prometheus_text;
 use crate::error::MmapError;
+use crate::gc::gc_metric_files;
 use crate::mmap_file::MmapMetricStore;
 use ext_php_rs::prelude::*;
 use std::collections::HashMap;
