@@ -41,7 +41,6 @@ Example labels blob: `{method="GET"}`.
 - Evaluate a PHP-FPM worker identity strategy (no stable worker-slot ID exposed): use `(pid,start-time)` and/or explicit slot mapping when needed.
 - Add an interoperability test harness against a local Prometheus instance/repo scrape to validate end-to-end ingestion/render behavior.
 - Evaluate extracting a standalone multiprocess Prometheus mmap core/toolkit (shared format + merge/GC), with thin PHP/Ruby bindings.
-- Evaluate a separate exporter daemon for mmap read/merge/render, so app workers only write metrics.
 
 ## Tool versions
 
@@ -71,6 +70,32 @@ Generate stubs:
 
 ```bash
 cargo php stubs --stdout
+```
+
+## Standalone exporter
+
+`prometheus-mmap-exporter` serves the merged contents of a metrics directory over HTTP. It keeps read-only file mappings cached between scrapes, while discovering added, removed, resized, or replaced `*.db` files on each scrape.
+
+Run it alongside the PHP workers:
+
+```bash
+cargo run --release --bin prometheus-mmap-exporter -- \
+  --dir /tmp/prometheus-mmap \
+  --listen 127.0.0.1:9464
+```
+
+`--dir PATH` is required. `--listen ADDR` defaults to `127.0.0.1:9464`.
+
+- `GET /metrics` returns Prometheus text exposition (`text/plain; version=0.0.4`).
+- `GET /healthz` returns `ok` when the process is running.
+
+For example, configure Prometheus to scrape it:
+
+```yaml
+scrape_configs:
+  - job_name: php-mmap
+    static_configs:
+      - targets: ['127.0.0.1:9464']
 ```
 
 ## Exported PHP API
